@@ -38,23 +38,48 @@ class AdamW(Optimizer):
                 if grad.is_sparse:
                     raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
 
-                raise NotImplementedError()
+                # raise NotImplementedError()
 
                 # State should be stored in this dictionary
                 state = self.state[p]
+                if len(state) == 0:
+                    state["step"] = 0
+                    state["exp_avg"] = torch.zeros_like(p.data)
+                    state["exp_avg_sq"] = torch.zeros_like(p.data)
+
+                exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
 
                 # Access hyperparameters from the `group` dictionary
-                alpha = group["lr"]
-
+                lr = group["lr"]
+                beta1, beta2 = group["betas"]
+                eps = group["eps"]
+                weight_decay = group["weight_decay"]
+                correct_bias = group["correct_bias"]
                 # Update first and second moments of the gradients
+                state["step"] += 1
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                 # Bias correction
+                if correct_bias:
+                    bias_correction1 = 1 - beta1 ** state["step"]
+                    bias_correction2 = 1 - beta2 ** state["step"]
+                    corrected_exp_avg = exp_avg / bias_correction1
+                    corrected_exp_avg_sq = exp_avg_sq / bias_correction2
+                else:
+                    corrected_exp_avg = exp_avg
+                    corrected_exp_avg_sq = exp_avg_sq
                 # Please note that we are using the "efficient version" given in
                 # https://arxiv.org/abs/1412.6980
 
                 # Update parameters
-
-                # Add weight decay after the main gradient-based updates.
-                # Please note that the learning rate should be incorporated into this update.
+                with torch.no_grad():
+                    denom = corrected_exp_avg_sq.sqrt().add(eps)
+                    new_p = p - lr*(corrected_exp_avg/ denom)
+                    
+                    # Add weight decay after the main gradient-based updates.
+                    # Please note that the learning rate should be incorporated into this update.
+                    new_p = new_p - lr * weight_decay * p
+                    p.copy_(new_p)
 
         return loss
