@@ -13,7 +13,7 @@ from utils import *
 # borrowed from the official Llama implementation:
 # https://github.com/facebookresearch/llama/blob/main/llama/model.py
 
-count=0
+#count=0
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         """
@@ -110,9 +110,11 @@ class Attention(nn.Module):
         #print(atten.shape,value.shape)
         output = torch.matmul(atten, value) #vとの積を計算
         
+        '''
         if count==0:
             print(scores)
         count+=1
+        '''
         
         return output
         
