@@ -12,6 +12,8 @@ from utils import *
 # Root Mean Square Layer Normalization (https://arxiv.org/abs/1910.07467)
 # borrowed from the official Llama implementation:
 # https://github.com/facebookresearch/llama/blob/main/llama/model.py
+
+#count=0
 class RMSNorm(torch.nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         """
@@ -44,7 +46,9 @@ class RMSNorm(torch.nn.Module):
             torch.Tensor: The normalized tensor.
         """
         # todo
-        raise NotImplementedError
+        # raise NotImplementedError
+        #print(x / torch.sqrt((x**2).mean(-1, keepdim=True) + self.eps))
+        return x / torch.sqrt((x**2).mean(-1, keepdim=True) + self.eps) #-1はテンソルの一番内側(<-各単語の特徴量?)を示す？keepdim=Trueで形を保存する？
 
     def forward(self, x):
         """
@@ -69,7 +73,7 @@ class Attention(nn.Module):
         self.n_local_heads = config.n_heads // model_parallel_size
         self.n_local_kv_heads = self.n_kv_heads // model_parallel_size
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
-        self.head_dim = config.dim // config.n_heads
+        self.head_dim = config.dim // config.n_heads #埋め込みベクトルの次元/アテンションヘッドの数？<-なぜキーやクエリの次元数になる？あるいはならない？
         self.max_seq_len = config.max_seq_len
         self.compute_query = nn.Linear(config.dim, config.n_heads * self.head_dim, bias=False)
         self.compute_key = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
@@ -94,7 +98,26 @@ class Attention(nn.Module):
         attention matrix before applying it to the value tensor.
         '''
         # todo
-        raise NotImplementedError
+        # raise NotImplementedError
+        #print("query", query.shape)
+        #print("key", key.shape)
+        #print(self.head_dim)
+        global count
+        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.head_dim) #qとkの積を計算、key.transpose(-1, -2)で転置、割る数？<-他の中身も見るとhead_dimでいいような気もする
+        #scores = torch.matmul(query, key) / math.sqrt(self.head_dim) 
+        atten = F.softmax(scores, dim=-1) #softmaxをかける
+        atten = self.attn_dropout(atten) #attention_dropout<-入力テンソルの一部の要素をランダムにゼロにする
+        #print(atten.shape,value.shape)
+        output = torch.matmul(atten, value) #vとの積を計算
+        
+        '''
+        if count==0:
+            print(scores)
+        count+=1
+        '''
+        
+        return output
+        
 
     def forward(
         self,
@@ -114,9 +137,9 @@ class Attention(nn.Module):
         query = self.compute_query(x)
         key = self.compute_key(x)
         value = self.compute_value(x)
-        query = query.view(batch_size, seqlen, self.n_local_heads, self.head_dim)
-        key = key.view(batch_size, seqlen, self.n_local_kv_heads, self.head_dim)
-        value = value.view(batch_size, seqlen, self.n_local_kv_heads, self.head_dim)
+        query = query.view(batch_size, seqlen, self.n_local_heads, self.head_dim) #各アテンションヘッドごとに変換（分割？）
+        key = key.view(batch_size, seqlen, self.n_local_kv_heads, self.head_dim) #各アテンションヘッドごとに変換（分割？）
+        value = value.view(batch_size, seqlen, self.n_local_kv_heads, self.head_dim) #各アテンションヘッドごとに変換（分割？）
 
         # RoPE relative positional embeddings
         query, key = apply_rotary_emb(query, key, self.head_dim, self.max_seq_len)
@@ -197,7 +220,14 @@ class LlamaLayer(nn.Module):
            output of the feed-forward network
         '''
         # todo
-        raise NotImplementedError
+        # raise NotImplementedError
+        x_norm = self.attention_norm(x)
+        attention_output = self.attention(x_norm) #アテンション
+        x = x + attention_output #残差結合
+        x_norm = self.ffn_norm(x)
+        ff_output = self.feed_forward(x_norm) #フィードフォワード、MLP？
+        x = x + ff_output #残差結合
+        return x
 
 class Llama(LlamaPreTrainedModel):
     def __init__(self, config: LlamaConfig):
@@ -274,11 +304,12 @@ class Llama(LlamaPreTrainedModel):
             logits, _ = self(idx_cond)
             logits = logits[:, -1, :] # crop to just the final time step
             # todo
-            raise NotImplementedError
+            # raise NotImplementedError
 
             if temperature == 0.0:
                 # select the single most likely index
-                idx_next = None
+                # idx_next = None
+                idx_next = torch.argmax(logits, dim=-1, keepdim=True)
             else:
                 '''
                 Perform temperature sampling:
@@ -290,6 +321,10 @@ class Llama(LlamaPreTrainedModel):
                 Note that we are not using top-k sampling/nucleus sampling in this procedure.
                 '''
                 idx_next = None
+                #ソフトマックスの指数をz/Tにする
+                logits = logits / temperature 
+                probs = F.softmax(logits, dim=-1) #probablyのこと
+                idx_next = torch.multinomial(probs, num_samples=1) #カテゴリカル分布からサンプル（1個）を抽出する関数
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
