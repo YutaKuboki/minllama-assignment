@@ -52,84 +52,104 @@ def apply_rotary_emb(
     _, seqlen, _, _ = query.shape
     device = query.device
 
+    #実数部と虚数部に分解
     query_real, query_imag = query.float().reshape(query.shape[:-1] + (-1, 2)).unbind(-1)
     key_real, key_imag = key.float().reshape(key.shape[:-1] + (-1, 2)).unbind(-1)
+    # This separates each query/key vector into its odd and even indices (assuming *one-indexing*).
+    # query_real contains q_1, q_3, q_5, ... and query_imag contains q_2, q_4, q_6, ...
+
     # todo
     # Please refer to slide 22 in https://phontron.com/class/anlp2024/assets/slides/anlp-05-transformers.pdf
     # and Section 3 in https://arxiv.org/abs/2104.09864.
 
     # reshape xq and xk to match the complex representation
-    #print("query", query)
-    #print("query_real", query_real)
-    #print("query_imag", query_imag)
-
-    #print("key", key)
-    #print("key_real", key_real)
-    #print("key_imag", key_imag)
-    
-    # This separates each query/key vector into its odd and even indices (assuming *one-indexing*).
-    # query_real contains q_1, q_3, q_5, ... and query_imag contains q_2, q_4, q_6, ...
 
     # First, compute the trigonometric values in the second and fourth columns in
     # slide 22 (linked above).
     
-    # Create a frequency tensor
+    # freqs : frequency tensor ： theta 0 から theta (head_dim // 2) まで格納
     freqs = torch.arange(0, head_dim // 2, device=device, dtype=torch.float32)
     freqs = (theta ** (-2 * freqs / head_dim)).unsqueeze(dim=0)  # shape: (1, head_dim // 2)
-    #print("freqs", freqs)
 
-    # Create a position tensor
-    positions = torch.arange(0, max_seq_len, device=device, dtype=torch.float32).unsqueeze(dim=1)  # shape: (max_seq_len, 1)
-    #print("positions", positions)
+    # positions : position tensor : 0 から max_seq_len - 1　までの数字を格納
+    positions = torch.arange(0, seqlen, device=device, dtype=torch.float32).unsqueeze(dim=1)  # shape: (seq_len, 1)
 
-    # Compute the argument for the sin and cos functions
-    angles = positions * freqs  # shape: (max_seq_len, head_dim // 2)
-    #print("angles", angles)
+    # angles : [[0 * theta 0, 0 * theta 1, ...], [1 * theta 0, 1 * theta 1, ...], ..., [(max_seq_len - 1) * theta 0, (max_seq_len - 1) * theta 1, ...]]
+    angles = positions * freqs  # shape: (seq_len, head_dim // 2)
 
-    # Compute the sin and cos values
+    # angles の全ての値を sin, cos に変換
     sin_values = torch.sin(angles)
     cos_values = torch.cos(angles)
-    #print("sin_values", sin_values)
-    #print("cos_values", cos_values)
+    
+    ###ここまでは合っていそう###
 
-    # Combine the sin and cos values into a complex number tensor
+    '''
     freqs_cis = torch.stack((cos_values, sin_values), dim=-1)  # shape: (max_seq_len, head_dim // 2, 2)
-    #print("before1", freqs_cis)
     freqs_cis = freqs_cis[:seqlen, :head_dim//2]  # シーケンス長とヘッド次元に合わせて切り取る
-    #print("before2", freqs_cis)
     freqs_cis = freqs_cis.view(seqlen, head_dim)  # (seqlen, head_dim) の形状に変形
-    #print("freqs_cis_before_reshape", freqs_cis)
+    # この時点で freqs_cis = [[cos(0 * theta 0), sin(0 * theta 0), cos(0 * theta 1), sin(0 * theta 1),...], ..., [cos((max_seq_len - 1) * theta0), ...]]
 
     # Reshape the frequency tensor for broadcasting
     freqs_cis = reshape_for_broadcast(freqs_cis, query)
-    #print("freqs_cis_after_reshape", freqs_cis)
+    
 
     # Compute the rotary position embeddings for the query tensor
     #query_rot = (query_real * freqs_cis[..., 0] - query_imag * freqs_cis[..., 1]).type_as(query)
     query_rot = (query_real[0][0] * freqs_cis[..., 0] - query_imag[0][0] * freqs_cis[..., 1]).type_as(query)
+    # slide の数式の一行目
+
     query_rot = torch.stack((query_rot, query_real[0][1] * freqs_cis[..., 2] - query_imag[0][1] * freqs_cis[..., 3]), dim=-1)
-    #print("freqs_cis[..., 0]", freqs_cis[..., 0])
-    #print("freqs_cis[..., 1]", freqs_cis[..., 1])
-    #print("query_rot_1", query_rot)
+    # slide の数式の三行目を加える
+
     query_rot2 = (query_imag[0][0] * freqs_cis[..., 0] + query_real[0][0] * freqs_cis[..., 1]).type_as(query)
+    # slide の数式の二行目
+
     query_rot2 = torch.stack((query_rot2, query_imag[0][1] * freqs_cis[..., 2] + query_real[0][1] * freqs_cis[..., 3]), dim=-1)
-    #print("query_rot_2", query_rot2)
+    # slide の数式の四行目を加える
+
     query_rot = torch.stack((query_rot, query_rot2), dim=-1)
+    # 重ね合わせる
+
     query_out = query_rot.view(*query.shape[:-1], -1)
 
     # Compute the rotary position embeddings for the key tensor
     key_rot = (key_real[0][0] * freqs_cis[..., 0] - key_imag[0][0] * freqs_cis[..., 1]).type_as(key)
     key_rot = torch.stack((key_rot, key_real[0][1] * freqs_cis[..., 2] - key_imag[0][1] * freqs_cis[..., 3]), dim=-1)
-    #print("freqs_cis[..., 0]", freqs_cis[..., 0])
-    #print("freqs_cis[..., 1]", freqs_cis[..., 1])
-    #print("key_rot_1", key_rot)
     key_rot2 = (key_imag[0][0] * freqs_cis[..., 0] + key_real[0][0] * freqs_cis[..., 1]).type_as(key)
     key_rot2 = torch.stack((key_rot2, key_imag[0][1] * freqs_cis[..., 2] + key_real[0][1] * freqs_cis[..., 3]), dim=-1)
-    #print("key_rot_2", key_rot2)
     key_rot = torch.stack((key_rot, key_rot2), dim=-1)
     key_out = key_rot.view(*key.shape[:-1], -1)
+    '''
+    
+    #一緒にするとよく分からなくなってしまうので別々にしておく
+    #queryのshape: (batch_size, seqlen, n_local_heads, self.head_dim)
+    #keyのshape: (batch_size, seqlen, n_local_kv_heads, self.head_dim)
+    #よってfreqs_???: (seqlen, head_dim/2) -> (1, seqlen, 1, head_dim/2) #1にしておけば次元が一致するまで繰り返される
+    freqs_cos = cos_values.view(1, seqlen, 1, cos_values.shape[-1])
+    freqs_sin = sin_values.view(1, seqlen, 1, sin_values.shape[-1])
+    
+    #回転行列を実部と虚部からなる列ベクトルにかけて回転させた後の実部と虚部を求める
+    #おそらく下みたいな計算をたくさんする???はず
+    #(cos -sin       (real
+    #            x   
+    # sin  cos)       imag) 
+    
+    query_out_real = query_real * freqs_cos - query_imag * freqs_sin
+    # slide の数式の奇数行
+
+    query_out_imag = query_real * freqs_sin + query_imag * freqs_cos
+    # slide の数式の偶数行
+
+    key_out_real = key_real * freqs_cos - key_imag * freqs_sin
+    key_out_imag = key_real * freqs_sin + key_imag * freqs_cos
+    
+    query_out = torch.stack([query_out_real, query_out_imag], dim=-1)
+    # 奇数行と偶数行を重ね合わせる
+
+    query_out = query_out.view(*query.shape[:-1], -1)
+    
+    key_out = torch.stack([key_out_real, key_out_imag], dim=-1)
+    key_out = key_out.view(*key.shape[:-1], -1)
 
     # Return the rotary position embeddings for the query and key tensors
     return query_out, key_out
-
-    
